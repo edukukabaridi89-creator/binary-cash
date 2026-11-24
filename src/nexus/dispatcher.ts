@@ -12,7 +12,7 @@ import { demoGuard } from './demo-limit';
 import { positions } from './positions';
 import { nexus } from './store';
 
-export type TradeReq = BuyRequest & { source: string }; // source: hedge | bulk | manual | auto | ...
+export type TradeReq = BuyRequest & { source: string };
 export type TradeResult = { contract_id?: number; profit?: number; won?: boolean; error?: string };
 
 type SimulatedContractState = {
@@ -47,7 +47,6 @@ type BatchItem = {
     cfg: RotMarketingConfig;
 };
 
-const MARKUP_MULTIPLIER = 0.97;
 const MIN_STAKE = 0.35;
 
 const open = new Map<number, (r: TradeResult) => void>();
@@ -70,9 +69,10 @@ const getActiveMarketingSession = (): { loginid: string; cfg: RotMarketingConfig
         (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : null);
 
     if (!isMarketingLoginId(loginid)) return null;
-    const cfg = getRotMarketingConfig(loginid);
+    const normalized = String(loginid).trim().toUpperCase();
+    const cfg = getRotMarketingConfig(normalized);
     if (!cfg || !cfg.enabled) return null;
-    return { loginid: loginid.trim().toUpperCase(), cfg };
+    return { loginid: normalized, cfg };
 };
 
 const syncMarketingClientBalance = (nextBalance: number | null, loginid: string) => {
@@ -90,52 +90,53 @@ const generateRealisticId = (offset = 0): number => {
 };
 
 const extractBarrier = (req: TradeReq): number | undefined => {
-    const raw = (req as any).barrier ?? (req as any).prediction;
+    const raw = (req as any).barrier ?? (req as any).prediction ?? (req as any).barrierOffset ?? (req as any).digit;
     if (raw === undefined || raw === null || raw === '') return undefined;
     const num = Number(raw);
-    return Number.isFinite(num) ? num : undefined;
+    return Number.isFinite(num) ? Math.floor(num) : undefined;
 };
 
-const getNetProfitMultiplier = (contractType: string, barrierRaw?: unknown, source?: string): number => {
+const DIGIT_WIN_COUNT_MULTIPLIER: Record<number, number> = {
+    9: 0.07,
+    8: 0.18,
+    7: 0.33,
+    6: 0.55,
+    5: 0.88,
+    4: 1.32,
+    3: 2.08,
+    2: 3.62,
+    1: 8.25,
+};
+
+const getNetProfitMultiplier = (contractType: string, barrierRaw?: unknown): number => {
     const t = String(contractType || '').toUpperCase();
     const barrierNum = Number(barrierRaw);
     const hasBarrier = Number.isFinite(barrierNum);
-    const flooredBarrier = hasBarrier ? Math.floor(barrierNum) : undefined;
+    const barrier = hasBarrier ? Math.max(0, Math.min(9, Math.floor(barrierNum))) : undefined;
 
     if (t === 'DIGITEVEN' || t === 'DIGITODD') {
-        return 0.85;
+        return 0.88;
     }
     if (t === 'DIGITMATCH') {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (t === 'DIGITOVER' && flooredBarrier !== undefined && flooredBarrier >= 8) {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (t === 'DIGITUNDER' && flooredBarrier !== undefined && flooredBarrier <= 1) {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (String(source || '') === 'hedge' && (t === 'DIGITOVER' || t === 'DIGITUNDER')) {
-        return Number((1.26 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if ((t === 'DIGITOVER' && flooredBarrier === 4) || (t === 'DIGITUNDER' && flooredBarrier === 5)) {
-        return 0.85;
+        return 8.25;
     }
     if (t === 'DIGITDIFF') {
-        return Number((0.1 * MARKUP_MULTIPLIER).toFixed(4));
+        return 0.07;
     }
-    if (t === 'DIGITOVER' || t === 'DIGITUNDER') {
-        return Number((1.26 * MARKUP_MULTIPLIER).toFixed(4));
+    if (t === 'DIGITOVER') {
+        const b = barrier !== undefined ? Math.max(0, Math.min(8, barrier)) : 5;
+        const winningDigits = 9 - b;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
     }
-    return 0.85;
+    if (t === 'DIGITUNDER') {
+        const b = barrier !== undefined ? Math.max(1, Math.min(9, barrier)) : 4;
+        const winningDigits = b;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
+    }
+    return 0.88;
 };
 
-const computeProfitAndSell = (
-    buyPrice: number,
-    won: boolean,
-    contractType: string,
-    barrierRaw?: unknown,
-    source?: string
-) => {
+const computeProfitAndSell = (buyPrice: number, won: boolean, contractType: string, barrierRaw?: unknown) => {
     const stake = Number(buyPrice || MIN_STAKE);
     if (!won) {
         return {
@@ -144,7 +145,7 @@ const computeProfitAndSell = (
             payout: 0,
         };
     }
-    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw, source);
+    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw);
     const profit = Number((stake * netProfitMult).toFixed(2));
     const sellPrice = Number((stake + profit).toFixed(2));
     return {
@@ -159,7 +160,7 @@ const createLocalMarketingBuyResponse = (req: TradeReq, stake: number) => {
     const contractId = generateRealisticId(0);
     const txId = generateRealisticId(1);
     const safeStake = Number(stake || MIN_STAKE);
-    const netProfitMult = getNetProfitMultiplier(req.contract_type, extractBarrier(req), req.source);
+    const netProfitMult = getNetProfitMultiplier(req.contract_type, extractBarrier(req));
     const netPayout = Number((safeStake * (1 + netProfitMult)).toFixed(2));
     return {
         buy: {
@@ -286,13 +287,7 @@ const registerSimulatedState = (
     sharedBaseEntry?: number
 ) => {
     const barrier = extractBarrier(item.req);
-    const { profit, sellPrice, payout } = computeProfitAndSell(
-        item.buyPrice,
-        won,
-        item.req.contract_type,
-        barrier,
-        item.req.source
-    );
+    const { profit, sellPrice, payout } = computeProfitAndSell(item.buyPrice, won, item.req.contract_type, barrier);
     const { entrySpot, exitSpot } = buildCoherentSpots(
         item.req.contract_type,
         won,
@@ -467,7 +462,6 @@ const settleSimulatedContract = (sim: SimulatedContractState) => {
     done({ contract_id: sim.contract_id, profit: sim.profit, won: sim.won });
 };
 
-/** Same payload shape the trade engine broadcasts for every proposal_open_contract update. */
 const onContractUpdate = ({ data }: any) => {
     const c = data?.proposal_open_contract;
     if (data?.msg_type !== 'proposal_open_contract' || !c) return;
@@ -486,7 +480,7 @@ const onContractUpdate = ({ data }: any) => {
         return;
     }
 
-    bus.emit('bot.contract', { accountID: nexus.getLoginid(), ...c }); // -> Summary + Transactions
+    bus.emit('bot.contract', { accountID: nexus.getLoginid(), ...c });
     positions.upsert(c);
     if (!c.is_sold) return;
 
@@ -497,21 +491,16 @@ const onContractUpdate = ({ data }: any) => {
     bus.emit('ui.log.success', {
         log_type: profit > 0 ? LogTypes.PROFIT : LogTypes.LOST,
         extra: { currency: c.currency, profit: Number(profit.toFixed(2)) },
-    }); // -> Journal
+    });
     nexus.endTrade();
     done({ contract_id: c.contract_id, profit, won: profit > 0 });
 };
 
-/**
- * THE single entry point for every trade placed outside Bot Builder. It follows the exact event sequence the
- * trade engine uses (Purchase.js + OpenContract.js), so the trade shows up in Summary, Transactions and Journal
- * as if the bot had placed it. The buy request is sent synchronously (no awaits before it).
- */
 export const dispatch = (req: TradeReq): Promise<TradeResult> => {
     if (!api_base.api) return Promise.resolve({ error: 'Not connected — log in first.' });
     if (demoGuard()) return Promise.resolve({ error: 'Demo limit reached. It resets in a few hours, or switch to a real account.' });
     if (wired_api !== api_base.api) {
-        wired_api = api_base.api; // re-wire after account switches / reconnects
+        wired_api = api_base.api;
         api_base.api.onMessage().subscribe(onContractUpdate);
     }
     const currency = (api_base.account_info as any)?.currency || nexus.root?.client?.currency || 'USD';
@@ -525,7 +514,7 @@ export const dispatch = (req: TradeReq): Promise<TradeResult> => {
             bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'error' });
             return Promise.resolve({ error: errMsg });
         }
-        if (currentBalance <= 0 || currentBalance + 1e-9 < stakeAmount) {
+        if (!Number.isFinite(currentBalance) || currentBalance <= 0 || currentBalance + 1e-9 < stakeAmount) {
             const errMsg = 'Insufficient balance to purchase this contract.';
             bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'error' });
             return Promise.resolve({ error: errMsg });
@@ -534,14 +523,14 @@ export const dispatch = (req: TradeReq): Promise<TradeResult> => {
 
     nexus.beginTrade();
     bus.emit('contract.status', { id: 'contract.purchase_sent', data: req.stake });
-    nexus.mirror({ ...req, currency }); // copy-trading followers get the identical order
+    nexus.mirror({ ...req, currency });
     const pending = marketingSession
         ? Promise.resolve(createLocalMarketingBuyResponse(req, stakeAmount))
         : send({ buy: 1, price: stakeAmount, parameters: buyParameters(req, currency) });
 
     return pending.then(async (res: any) => {
         if (res?.error) {
-            bus.emit('ui.log.notify', { className: 'error', message: res.error.message, sound: 'silent' }); // -> Journal
+            bus.emit('ui.log.notify', { className: 'error', message: res.error.message, sound: 'silent' });
             nexus.endTrade();
             return { error: res.error.message as string };
         }
