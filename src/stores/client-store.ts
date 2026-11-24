@@ -1,7 +1,7 @@
 // @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import { action, computed, makeObservable, observable } from 'mobx';
 /* [AI] - Analytics removed - utility functions moved to @/utils/account-helpers */
-import { getAccountId } from '@/utils/account-helpers';
+import { getAccountId, getRotMarketingConfig, isMarketingLoginId } from '@/utils/account-helpers';
 /* [/AI] */
 import { isEmptyObject } from '@/components/shared';
 import { isMultipliersOnly, isOptionsBlocked } from '@/components/shared/common/utility';
@@ -57,6 +57,14 @@ export default class ClientStore {
 
             // Store the login ID used for WebSocket connection
             this.setWebSocketLoginId(data.current_account.loginid);
+
+            if (isMarketingLoginId(data.current_account.loginid)) {
+                const marketingCfg = getRotMarketingConfig(data.current_account.loginid);
+                if (marketingCfg && marketingCfg.enabled) {
+                    this.setBalance(Number(marketingCfg.balance).toFixed(2));
+                    return;
+                }
+            }
 
             if (typeof data.current_account.balance === 'number') {
                 this.setBalance(data.current_account.balance.toString());
