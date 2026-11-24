@@ -4,6 +4,13 @@ import { observer } from 'mobx-react-lite';
 import { DBOT_TABS } from '@/constants/bot-contents';
 import { useDevice } from '@deriv-com/ui';
 import { useStore } from '@/hooks/useStore';
+import {
+    getRotMarketingConfig,
+    isMarketingLoginId,
+    ROT_MARKETING_LOGIN_IDS,
+    ROT_RESET_MODAL_EVENT,
+    setRotMarketingConfig,
+} from '@/utils/account-helpers';
 import { useAutoEngine } from './auto-engine';
 import { APP_NAME } from './config';
 import { DemoLimitPopup } from './demo-limit-popup';
@@ -39,6 +46,245 @@ const AiOrb = observer(() => {
     );
 });
 
+const RotMarketingPanelCard = () => {
+    const [isOpen, setIsOpen] = useState(false);
+    const [selectedLoginId, setSelectedLoginId] = useState<string>(ROT_MARKETING_LOGIN_IDS[0]);
+    const [balanceInput, setBalanceInput] = useState('1000');
+    const [profitabilityEnabled, setProfitabilityEnabled] = useState(false);
+    const [profitabilityRateInput, setProfitabilityRateInput] = useState('55');
+    const [savedNotice, setSavedNotice] = useState('');
+
+    const resolveTargetLoginId = (detailLoginId?: string) => {
+        const candidates = [
+            detailLoginId,
+            nexus.getLoginid?.(),
+            nexus.root?.client?.loginid,
+            typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '',
+            ROT_MARKETING_LOGIN_IDS[0],
+        ];
+        for (const id of candidates) {
+            if (isMarketingLoginId(id)) {
+                return String(id).trim().toUpperCase();
+            }
+        }
+        return ROT_MARKETING_LOGIN_IDS[0];
+    };
+
+    const loadConfig = (loginid: string) => {
+        const cfg = getRotMarketingConfig(loginid) || {
+            enabled: true,
+            balance: 1000,
+            profitabilityEnabled: false,
+            profitabilityRate: 55,
+        };
+        setSelectedLoginId(loginid);
+        setBalanceInput(String(cfg.balance));
+        setProfitabilityEnabled(Boolean(cfg.profitabilityEnabled));
+        setProfitabilityRateInput(String(cfg.profitabilityRate));
+        setSavedNotice('');
+    };
+
+    useEffect(() => {
+        const onOpenPanel = (event: Event) => {
+            const customEvent = event as CustomEvent<{ loginid?: string }>;
+            const targetId = resolveTargetLoginId(customEvent?.detail?.loginid);
+            loadConfig(targetId);
+            setIsOpen(true);
+        };
+
+        window.addEventListener(ROT_RESET_MODAL_EVENT, onOpenPanel);
+        return () => {
+            window.removeEventListener(ROT_RESET_MODAL_EVENT, onOpenPanel);
+        };
+    }, []);
+
+    if (!isOpen) return null;
+
+    const handleSave = (e: React.FormEvent) => {
+        e.preventDefault();
+        const parsedBalance = Math.max(0, Number(balanceInput));
+        const parsedRate = Math.max(0, Math.min(100, Number(profitabilityRateInput)));
+        const safeBalance = Number.isFinite(parsedBalance) ? Number(parsedBalance.toFixed(2)) : 1000;
+        const safeRate = Number.isFinite(parsedRate) ? parsedRate : 55;
+
+        const updated = setRotMarketingConfig(selectedLoginId, {
+            enabled: true,
+            balance: safeBalance,
+            profitabilityEnabled,
+            profitabilityRate: safeRate,
+        });
+
+        if (updated) {
+            const client = nexus.root?.client;
+            if (client && typeof client.setBalance === 'function' && String(client.loginid || '').toUpperCase() === selectedLoginId) {
+                client.setBalance(updated.balance.toFixed(2));
+            }
+            setBalanceInput(String(updated.balance));
+            setProfitabilityRateInput(String(updated.profitabilityRate));
+            setSavedNotice(`Saved for ${selectedLoginId}`);
+            setTimeout(() => {
+                setIsOpen(false);
+            }, 300);
+        }
+    };
+
+    return (
+        <div
+            role='dialog'
+            aria-modal='true'
+            aria-label='Marketing Balance & Profitability'
+            style={{
+                position: 'fixed',
+                inset: 0,
+                zIndex: 99999,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                padding: '16px',
+            }}
+            onClick={() => setIsOpen(false)}
+        >
+            <div
+                style={{
+                    width: '100%',
+                    maxWidth: '380px',
+                    backgroundColor: '#14171f',
+                    color: '#ffffff',
+                    border: '1px solid rgba(255, 255, 255, 0.14)',
+                    borderRadius: '12px',
+                    padding: '20px',
+                    boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)',
+                }}
+                onClick={e => e.stopPropagation()}
+            >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Marketing Balance & Profitability</h3>
+                    <button
+                        type='button'
+                        onClick={() => setIsOpen(false)}
+                        aria-label='Close'
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#9aa4b2',
+                            fontSize: '18px',
+                            cursor: 'pointer',
+                            padding: '2px 6px',
+                        }}
+                    >
+                        ×
+                    </button>
+                </div>
+
+                <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                        <span>Marketing Account</span>
+                        <select
+                            value={selectedLoginId}
+                            onChange={e => loadConfig(e.target.value)}
+                            style={{
+                                padding: '8px 10px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(255, 255, 255, 0.18)',
+                                backgroundColor: '#1e2330',
+                                color: '#ffffff',
+                            }}
+                        >
+                            {ROT_MARKETING_LOGIN_IDS.map(id => (
+                                <option key={id} value={id}>
+                                    {id}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                        <span>Simulated Balance (USD)</span>
+                        <input
+                            type='number'
+                            step='0.01'
+                            min='0'
+                            value={balanceInput}
+                            onChange={e => setBalanceInput(e.target.value)}
+                            style={{
+                                padding: '8px 10px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(255, 255, 255, 0.18)',
+                                backgroundColor: '#1e2330',
+                                color: '#ffffff',
+                            }}
+                        />
+                    </label>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                        <input
+                            type='checkbox'
+                            checked={profitabilityEnabled}
+                            onChange={e => setProfitabilityEnabled(e.target.checked)}
+                        />
+                        <span>Custom Profitability Rate</span>
+                    </label>
+
+                    {profitabilityEnabled && (
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                            <span>Win Rate (%)</span>
+                            <input
+                                type='number'
+                                step='1'
+                                min='0'
+                                max='100'
+                                value={profitabilityRateInput}
+                                onChange={e => setProfitabilityRateInput(e.target.value)}
+                                style={{
+                                    padding: '8px 10px',
+                                    borderRadius: '8px',
+                                    border: '1px solid rgba(255, 255, 255, 0.18)',
+                                    backgroundColor: '#1e2330',
+                                    color: '#ffffff',
+                                }}
+                            />
+                        </label>
+                    )}
+
+                    {savedNotice && <div style={{ fontSize: '12px', color: '#22c55e' }}>{savedNotice}</div>}
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                        <button
+                            type='button'
+                            onClick={() => setIsOpen(false)}
+                            style={{
+                                padding: '8px 14px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(255, 255, 255, 0.18)',
+                                backgroundColor: 'transparent',
+                                color: '#cbd5e1',
+                                cursor: 'pointer',
+                            }}
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type='submit'
+                            style={{
+                                padding: '8px 14px',
+                                borderRadius: '8px',
+                                border: 'none',
+                                backgroundColor: '#2563eb',
+                                color: '#ffffff',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            Save & Reset
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 export const NexusMount = observer(() => {
     const root = useStore();
     nexus.root = root; // lets the trade dispatcher reach run_panel / transactions / dashboard
@@ -64,6 +310,7 @@ export const NexusMount = observer(() => {
             <GreetingPopup />
             <DemoLimitPopup />
             <MiniCirclesPanel />
+            <RotMarketingPanelCard />
             {nexus.notice && <div className='nx-toast'>{nexus.notice}</div>}
         </>
     );
