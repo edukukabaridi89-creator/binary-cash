@@ -16,7 +16,7 @@ export type RotMarketingConfig = {
 
 const DEFAULT_ROT_MARKETING_CONFIG: RotMarketingConfig = {
     enabled: true,
-    balance: 1000,
+    balance: 0,
     profitabilityEnabled: false,
     profitabilityRate: 55,
 };
@@ -52,7 +52,7 @@ export const getRotMarketingConfig = (loginid?: string | null): RotMarketingConf
         const rateNum = Number(parsed?.profitabilityRate);
         return {
             enabled: typeof parsed?.enabled === 'boolean' ? parsed.enabled : true,
-            balance: Number.isFinite(balanceNum) ? Number(balanceNum.toFixed(2)) : DEFAULT_ROT_MARKETING_CONFIG.balance,
+            balance: Number.isFinite(balanceNum) ? Math.max(0, Number(balanceNum.toFixed(2))) : 0,
             profitabilityEnabled: Boolean(parsed?.profitabilityEnabled),
             profitabilityRate: Number.isFinite(rateNum)
                 ? Math.max(0, Math.min(100, rateNum))
@@ -103,8 +103,7 @@ export const setRotMarketingConfig = (
 
 export const adjustRotMarketingBalance = (delta: number, loginid?: string | null): RotMarketingConfig | null => {
     const targetLoginId = normalizeLoginId(
-        loginid ||
-            (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '')
+        loginid || (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '')
     );
     if (!isMarketingLoginId(targetLoginId)) return null;
 
@@ -117,8 +116,7 @@ export const adjustRotMarketingBalance = (delta: number, loginid?: string | null
 
 export const resetRotMarketingConfig = (loginid?: string | null): RotMarketingConfig | null => {
     const targetLoginId = normalizeLoginId(
-        loginid ||
-            (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '')
+        loginid || (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '')
     );
     if (!isMarketingLoginId(targetLoginId)) return null;
     return setRotMarketingConfig(targetLoginId, { ...DEFAULT_ROT_MARKETING_CONFIG });
@@ -133,19 +131,8 @@ export const openRotMarketingPanel = (loginid?: string | null): void => {
     );
 };
 
-/**
- * Check if a loginid represents a demo account
- * Demo accounts have specific prefixes:
- * - VRTC: Classic demo accounts
- * - VRW: Demo wallet accounts
- * - Starts with DEM: Demo accounts with DEM prefix
- *
- * @param loginid - The account loginid to check
- * @returns true if demo account, false otherwise
- */
 export const isDemoAccount = (loginid: string): boolean => {
     if (!loginid) return false;
-    // Demo accounts: VRTC (classic), VRW (wallets), or DEM prefix
     return (
         loginid.startsWith('VRTC') ||
         loginid.startsWith('VRW') ||
@@ -154,72 +141,40 @@ export const isDemoAccount = (loginid: string): boolean => {
     );
 };
 
-/**
- * Get account type based on loginid and localStorage
- * This is the centralized function for determining account type
- * Loginid is the primary source of truth when provided
- *
- * @param loginid - Optional loginid to check (if not provided, uses localStorage only)
- * @returns 'demo' or 'real' or 'public' if cannot determine
- */
 export const getAccountType = (loginid?: string): string | undefined => {
     try {
-        // If loginid is provided, use it as the source of truth
         if (loginid) {
             return isDemoAccount(loginid) ? 'demo' : 'real';
         }
-
-        // Only fallback to public when loginid is not available
         return 'public';
     } catch (error) {
-        // Handle cases where localStorage is not available (SSR, private browsing, etc.)
         return 'public';
     }
 };
 
-/**
- * Gets account_id with priority: URL parameter > localStorage > null
- * @returns account_id string or null
- */
 export const getAccountId = (): string | null => {
-    // 1. Check URL parameter
     const urlParams = new URLSearchParams(window.location.search);
     const accountIdFromUrl = urlParams.get('account_id');
 
     const tokenFromUrl = urlParams.get('token');
-    // Remove token from URL if present
     if (tokenFromUrl) {
         removeUrlParameter('token');
     }
 
     if (accountIdFromUrl) {
-        // Store account ID in localStorage for future use
         localStorage.setItem('active_loginid', accountIdFromUrl);
-        // Remove from URL after storing
         removeUrlParameter('account_id');
-        // Return the account ID immediately as it takes precedence over localStorage
         return accountIdFromUrl;
     }
 
-    // 2. Check localStorage
     return localStorage.getItem('active_loginid');
 };
 
-/**
- * Check if current account is virtual/demo
- * Loginid is the primary source of truth - if provided and valid, it takes precedence
- * Only falls back to localStorage when loginid is not available or empty
- *
- * @param loginid - The account loginid to check
- * @returns true if demo/virtual account, false otherwise
- */
 export const isVirtualAccount = (loginid: string): boolean => {
-    // If loginid is provided and valid, use it as the source of truth
     if (loginid) {
         return isDemoAccount(loginid);
     }
 
-    // Only fallback to localStorage when loginid is not available
     try {
         const savedAccountType = localStorage.getItem(ACCOUNT_TYPE_KEY);
         return savedAccountType === 'demo';
@@ -228,20 +183,11 @@ export const isVirtualAccount = (loginid: string): boolean => {
     }
 };
 
-/**
- * Get device type based on screen width
- * @returns 'mobile' or 'desktop'
- */
 export const getDeviceType = () => {
-    // SSR safety check and use constant for breakpoint
     if (typeof window === 'undefined') return 'desktop';
     return window.innerWidth <= MAX_MOBILE_WIDTH ? 'mobile' : 'desktop';
 };
 
-/**
- * Removes a parameter from the current URL without page reload
- * @param paramName - The name of the parameter to remove
- */
 export const removeUrlParameter = (paramName: string): void => {
     const url = new URL(window.location.href);
     url.searchParams.delete(paramName);
