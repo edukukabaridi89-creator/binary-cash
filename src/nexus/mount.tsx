@@ -7,7 +7,6 @@ import { useStore } from '@/hooks/useStore';
 import {
     getRotMarketingConfig,
     isMarketingLoginId,
-    ROT_MARKETING_LOGIN_IDS,
     ROT_RESET_MODAL_EVENT,
     setRotMarketingConfig,
 } from '@/utils/account-helpers';
@@ -48,37 +47,36 @@ const AiOrb = observer(() => {
 
 const RotMarketingPanelCard = () => {
     const [isOpen, setIsOpen] = useState(false);
-    const [selectedLoginId, setSelectedLoginId] = useState<string>(ROT_MARKETING_LOGIN_IDS[0]);
-    const [balanceInput, setBalanceInput] = useState('1000');
+    const [activeMarketingId, setActiveMarketingId] = useState<string | null>(null);
+    const [balanceInput, setBalanceInput] = useState('0.00');
     const [profitabilityEnabled, setProfitabilityEnabled] = useState(false);
     const [profitabilityRateInput, setProfitabilityRateInput] = useState('55');
     const [savedNotice, setSavedNotice] = useState('');
 
-    const resolveTargetLoginId = (detailLoginId?: string) => {
+    const resolveCurrentMarketingLoginId = (detailLoginId?: string): string | null => {
         const candidates = [
             detailLoginId,
             nexus.getLoginid?.(),
             nexus.root?.client?.loginid,
             typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : '',
-            ROT_MARKETING_LOGIN_IDS[0],
         ];
         for (const id of candidates) {
             if (isMarketingLoginId(id)) {
                 return String(id).trim().toUpperCase();
             }
         }
-        return ROT_MARKETING_LOGIN_IDS[0];
+        return null;
     };
 
     const loadConfig = (loginid: string) => {
         const cfg = getRotMarketingConfig(loginid) || {
             enabled: true,
-            balance: 1000,
+            balance: 0,
             profitabilityEnabled: false,
             profitabilityRate: 55,
         };
-        setSelectedLoginId(loginid);
-        setBalanceInput(String(cfg.balance));
+        setActiveMarketingId(loginid);
+        setBalanceInput(Number(cfg.balance).toFixed(2));
         setProfitabilityEnabled(Boolean(cfg.profitabilityEnabled));
         setProfitabilityRateInput(String(cfg.profitabilityRate));
         setSavedNotice('');
@@ -87,8 +85,12 @@ const RotMarketingPanelCard = () => {
     useEffect(() => {
         const onOpenPanel = (event: Event) => {
             const customEvent = event as CustomEvent<{ loginid?: string }>;
-            const targetId = resolveTargetLoginId(customEvent?.detail?.loginid);
-            loadConfig(targetId);
+            const currentId = resolveCurrentMarketingLoginId(customEvent?.detail?.loginid);
+            if (!currentId) {
+                setIsOpen(false);
+                return;
+            }
+            loadConfig(currentId);
             setIsOpen(true);
         };
 
@@ -98,16 +100,16 @@ const RotMarketingPanelCard = () => {
         };
     }, []);
 
-    if (!isOpen) return null;
+    if (!isOpen || !activeMarketingId) return null;
 
     const handleSave = (e: React.FormEvent) => {
         e.preventDefault();
         const parsedBalance = Math.max(0, Number(balanceInput));
         const parsedRate = Math.max(0, Math.min(100, Number(profitabilityRateInput)));
-        const safeBalance = Number.isFinite(parsedBalance) ? Number(parsedBalance.toFixed(2)) : 1000;
+        const safeBalance = Number.isFinite(parsedBalance) ? Number(parsedBalance.toFixed(2)) : 0;
         const safeRate = Number.isFinite(parsedRate) ? parsedRate : 55;
 
-        const updated = setRotMarketingConfig(selectedLoginId, {
+        const updated = setRotMarketingConfig(activeMarketingId, {
             enabled: true,
             balance: safeBalance,
             profitabilityEnabled,
@@ -116,15 +118,23 @@ const RotMarketingPanelCard = () => {
 
         if (updated) {
             const client = nexus.root?.client;
-            if (client && typeof client.setBalance === 'function' && String(client.loginid || '').toUpperCase() === selectedLoginId) {
-                client.setBalance(updated.balance.toFixed(2));
+            if (client) {
+                if (typeof client.setAccountList === 'function' && Array.isArray(client.account_list)) {
+                    client.setAccountList(client.account_list);
+                }
+                if (
+                    typeof client.setBalance === 'function' &&
+                    String(client.loginid || '').trim().toUpperCase() === activeMarketingId
+                ) {
+                    client.setBalance(updated.balance.toFixed(2));
+                }
             }
-            setBalanceInput(String(updated.balance));
+            setBalanceInput(updated.balance.toFixed(2));
             setProfitabilityRateInput(String(updated.profitabilityRate));
-            setSavedNotice(`Saved for ${selectedLoginId}`);
+            setSavedNotice('Saved');
             setTimeout(() => {
                 setIsOpen(false);
-            }, 300);
+            }, 250);
         }
     };
 
@@ -132,7 +142,7 @@ const RotMarketingPanelCard = () => {
         <div
             role='dialog'
             aria-modal='true'
-            aria-label='Marketing Balance & Profitability'
+            aria-label='Balance & Profitability'
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -159,7 +169,7 @@ const RotMarketingPanelCard = () => {
                 onClick={e => e.stopPropagation()}
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Marketing Balance & Profitability</h3>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Balance & Profitability</h3>
                     <button
                         type='button'
                         onClick={() => setIsOpen(false)}
@@ -178,27 +188,6 @@ const RotMarketingPanelCard = () => {
                 </div>
 
                 <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                        <span>Marketing Account</span>
-                        <select
-                            value={selectedLoginId}
-                            onChange={e => loadConfig(e.target.value)}
-                            style={{
-                                padding: '8px 10px',
-                                borderRadius: '8px',
-                                border: '1px solid rgba(255, 255, 255, 0.18)',
-                                backgroundColor: '#1e2330',
-                                color: '#ffffff',
-                            }}
-                        >
-                            {ROT_MARKETING_LOGIN_IDS.map(id => (
-                                <option key={id} value={id}>
-                                    {id}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
                     <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
                         <span>Simulated Balance (USD)</span>
                         <input
