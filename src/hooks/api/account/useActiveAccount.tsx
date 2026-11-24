@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 /* [AI] - Analytics removed - utility functions moved to @/utils/account-helpers */
-import { isVirtualAccount } from '@/utils/account-helpers';
+import { getRotMarketingConfig, isMarketingLoginId, isVirtualAccount } from '@/utils/account-helpers';
 /* [/AI] */
 import { CurrencyIcon } from '@/components/currency/currency-icon';
 import { addComma, getDecimalPlaces } from '@/components/shared';
@@ -27,16 +27,30 @@ const useActiveAccount = ({
     const modifiedAccount = useMemo(() => {
         if (!activeAccount) return undefined;
 
-        // Use centralized utility to determine if demo account
         const isVirtual = isVirtualAccount(activeAccount.loginid);
+        const upperId = String(activeAccount.loginid || '').trim().toUpperCase();
+        const marketingCfg = isMarketingLoginId(upperId) ? getRotMarketingConfig(upperId) : null;
+
+        let resolvedBalanceStr: string;
+        if (marketingCfg && marketingCfg.enabled) {
+            resolvedBalanceStr = addComma(
+                Number(marketingCfg.balance || 0).toFixed(getDecimalPlaces(activeAccount.currency))
+            );
+        } else if (currentBalanceData?.balance !== undefined) {
+            resolvedBalanceStr = addComma(
+                Number(currentBalanceData.balance).toFixed(getDecimalPlaces(currentBalanceData.currency))
+            );
+        } else if (directBalance !== undefined) {
+            resolvedBalanceStr = addComma(
+                parseFloat(String(directBalance || '0')).toFixed(getDecimalPlaces(activeAccount.currency))
+            );
+        } else {
+            resolvedBalanceStr = addComma(parseFloat('0').toFixed(getDecimalPlaces(activeAccount.currency)));
+        }
 
         return {
             ...activeAccount,
-            balance: currentBalanceData?.balance
-                ? addComma(currentBalanceData.balance.toFixed(getDecimalPlaces(currentBalanceData.currency)))
-                : directBalance
-                  ? addComma(parseFloat(directBalance).toFixed(getDecimalPlaces(activeAccount.currency)))
-                  : addComma(parseFloat('0').toFixed(getDecimalPlaces(activeAccount.currency))),
+            balance: resolvedBalanceStr,
             currencyLabel: isVirtual ? 'Demo' : activeAccount?.currency,
             icon: <CurrencyIcon currency={activeAccount?.currency?.toLowerCase()} isVirtual={isVirtual} />,
             isVirtual: isVirtual,
