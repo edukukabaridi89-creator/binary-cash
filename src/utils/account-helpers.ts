@@ -32,6 +32,35 @@ export const isMarketingLoginId = (loginid?: string | null): boolean => {
 const getMarketingStorageKey = (loginid: string): string =>
     `${ROT_MARKETING_STORAGE_PREFIX}${normalizeLoginId(loginid)}`;
 
+export const syncMarketingBalanceToStoredAccounts = (loginid: string, balance: number): void => {
+    if (typeof window === 'undefined') return;
+    const normalized = normalizeLoginId(loginid);
+    if (!isMarketingLoginId(normalized)) return;
+
+    const formatted = Number(Math.max(0, Number(balance || 0)).toFixed(2));
+    try {
+        const rawDetails = window.localStorage.getItem('client_account_details');
+        if (rawDetails) {
+            const parsed = JSON.parse(rawDetails);
+            if (Array.isArray(parsed)) {
+                const updated = parsed.map((acc: any) =>
+                    normalizeLoginId(acc?.loginid) === normalized ? { ...acc, balance: formatted } : acc
+                );
+                window.localStorage.setItem('client_account_details', JSON.stringify(updated));
+            } else if (parsed && typeof parsed === 'object') {
+                if (parsed[normalized]) {
+                    parsed[normalized] = { ...parsed[normalized], balance: formatted };
+                } else if (parsed[loginid]) {
+                    parsed[loginid] = { ...parsed[loginid], balance: formatted };
+                }
+                window.localStorage.setItem('client_account_details', JSON.stringify(parsed));
+            }
+        }
+    } catch {
+        // ignore storage errors
+    }
+};
+
 export const getRotMarketingConfig = (loginid?: string | null): RotMarketingConfig | null => {
     const normalized = normalizeLoginId(loginid);
     if (!isMarketingLoginId(normalized)) return null;
@@ -93,6 +122,7 @@ export const setRotMarketingConfig = (
     if (typeof window !== 'undefined') {
         try {
             window.localStorage.setItem(getMarketingStorageKey(normalized), JSON.stringify(next));
+            syncMarketingBalanceToStoredAccounts(normalized, next.balance);
         } catch {
             // ignore storage write errors
         }
