@@ -10,7 +10,7 @@ import { LogoMark } from './LogoMark';
 import './app-logo.scss';
 
 const RESET_KEYWORD = 'reset';
-const TYPING_WINDOW_MS = 1500;
+const TYPING_WINDOW_MS = 1800;
 
 export const AppLogo = () => {
     const blockNextClickRef = useRef(false);
