@@ -6,6 +6,10 @@
         display: flex;
         align-items: center;
         text-decoration: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: manipulation;
     }
 
     // Logo + app name mark (shared by the header and the mobile drawer).
@@ -13,12 +17,18 @@
         display: flex;
         align-items: center;
         min-width: 0;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: manipulation;
     }
 
     &__logo-img {
         width: auto;
         max-width: 160px;
         object-fit: contain;
+        -webkit-touch-callout: none;
+        -webkit-user-drag: none;
     }
 
     // Letter-badge fallback shown when no logo file/data URL is available.
