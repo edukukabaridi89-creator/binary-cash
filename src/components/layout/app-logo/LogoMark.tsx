@@ -3,7 +3,7 @@
 // → public/logo.<png|jpg|jpeg|webp> → letter-badge fallback. The app name comes from the
 // live preview, else the resolved deploy/build name (see getAppName). Visibility of the
 // name text is controlled by getShowAppName / preview show flag.
-import { type PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type PointerEvent, type TouchEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
     getPreviewAppName,
     getPreviewLogo,
@@ -53,8 +53,7 @@ export const LogoMark = ({ height = 32, onLongPressTriggered }: TLogoMarkProps) 
         }
     };
 
-    const handlePointerDown = (e: PointerEvent<HTMLSpanElement>) => {
-        if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const startLongPress = () => {
         triggeredRef.current = false;
         clearLongPressTimer();
         longPressTimerRef.current = setTimeout(() => {
@@ -64,11 +63,24 @@ export const LogoMark = ({ height = 32, onLongPressTriggered }: TLogoMarkProps) 
         }, LONG_PRESS_MS);
     };
 
-    const handlePointerEnd = () => {
+    const handlePointerDown = (e: PointerEvent<HTMLSpanElement>) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        startLongPress();
+    };
+
+    const handleTouchStart = (e: TouchEvent<HTMLSpanElement>) => {
+        if (e.touches.length > 1) {
+            clearLongPressTimer();
+            return;
+        }
+        startLongPress();
+    };
+
+    const handlePressEnd = () => {
         clearLongPressTimer();
     };
 
-    const handleClickCapture = (e: PointerEvent<HTMLSpanElement> | React.MouseEvent<HTMLSpanElement>) => {
+    const handleClickCapture = (e: React.MouseEvent<HTMLSpanElement>) => {
         if (triggeredRef.current) {
             e.preventDefault();
             e.stopPropagation();
@@ -99,9 +111,12 @@ export const LogoMark = ({ height = 32, onLongPressTriggered }: TLogoMarkProps) 
         <span
             className='app-header__logo-mark'
             onPointerDown={handlePointerDown}
-            onPointerUp={handlePointerEnd}
-            onPointerCancel={handlePointerEnd}
-            onPointerLeave={handlePointerEnd}
+            onPointerUp={handlePressEnd}
+            onPointerCancel={handlePressEnd}
+            onPointerLeave={handlePressEnd}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handlePressEnd}
+            onTouchCancel={handlePressEnd}
             onClickCapture={handleClickCapture}
         >
             {logoSrc ? (
