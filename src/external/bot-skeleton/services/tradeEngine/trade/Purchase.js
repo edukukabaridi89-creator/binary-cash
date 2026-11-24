@@ -11,7 +11,6 @@ import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy } from '../uti
 import { purchaseSuccessful } from './state/actions';
 import { BEFORE_PURCHASE } from './state/constants';
 
-const MARKUP_MULTIPLIER = 0.97;
 const MIN_STAKE = 0.35;
 
 let delayIndex = 0;
@@ -19,9 +18,10 @@ let purchase_reference;
 
 const getActiveMarketingSession = loginid => {
     if (!isMarketingLoginId(loginid)) return null;
-    const cfg = getRotMarketingConfig(loginid);
+    const normalized = String(loginid).trim().toUpperCase();
+    const cfg = getRotMarketingConfig(normalized);
     if (!cfg || !cfg.enabled) return null;
-    return { loginid: String(loginid).trim().toUpperCase(), cfg };
+    return { loginid: normalized, cfg };
 };
 
 const canPlaceMarketingTrade = (session, stake) => {
@@ -59,40 +59,71 @@ const generateRealisticId = (offset = 0) => {
     return Number(`${nowSec}${suffix}`) + offset;
 };
 
-const getNetProfitMultiplier = (contractType, barrierRaw, source = 'bot') => {
+const extractTradeBarrier = (tradeOptions, contractType) => {
+    if (!tradeOptions) return undefined;
+    const raw =
+        tradeOptions.prediction ??
+        tradeOptions.barrierOffset ??
+        tradeOptions.barrier ??
+        tradeOptions.digit;
+    if (raw !== undefined && raw !== null && raw !== '') {
+        const num = Number(raw);
+        if (Number.isFinite(num)) return Math.floor(num);
+    }
+    try {
+        const built = tradeOptionToBuy(contractType, tradeOptions);
+        const paramBarrier = built?.parameters?.barrier;
+        if (paramBarrier !== undefined && paramBarrier !== null && paramBarrier !== '') {
+            const num = Number(paramBarrier);
+            if (Number.isFinite(num)) return Math.floor(num);
+        }
+    } catch (e) {
+        // ignore
+    }
+    return undefined;
+};
+
+const DIGIT_WIN_COUNT_MULTIPLIER = {
+    9: 0.07,
+    8: 0.18,
+    7: 0.33,
+    6: 0.55,
+    5: 0.88,
+    4: 1.32,
+    3: 2.08,
+    2: 3.62,
+    1: 8.25,
+};
+
+const getNetProfitMultiplier = (contractType, barrierRaw) => {
     const t = String(contractType || '').toUpperCase();
     const barrierNum = Number(barrierRaw);
     const hasBarrier = Number.isFinite(barrierNum);
-    const flooredBarrier = hasBarrier ? Math.floor(barrierNum) : undefined;
+    const barrier = hasBarrier ? Math.max(0, Math.min(9, Math.floor(barrierNum))) : undefined;
 
     if (t === 'DIGITEVEN' || t === 'DIGITODD') {
-        return 0.85;
+        return 0.88;
     }
     if (t === 'DIGITMATCH') {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (t === 'DIGITOVER' && flooredBarrier !== undefined && flooredBarrier >= 8) {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (t === 'DIGITUNDER' && flooredBarrier !== undefined && flooredBarrier <= 1) {
-        return Number((7.5 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if (String(source || '') === 'hedge' && (t === 'DIGITOVER' || t === 'DIGITUNDER')) {
-        return Number((1.26 * MARKUP_MULTIPLIER).toFixed(4));
-    }
-    if ((t === 'DIGITOVER' && flooredBarrier === 4) || (t === 'DIGITUNDER' && flooredBarrier === 5)) {
-        return 0.85;
+        return 8.25;
     }
     if (t === 'DIGITDIFF') {
-        return Number((0.1 * MARKUP_MULTIPLIER).toFixed(4));
+        return 0.07;
     }
-    if (t === 'DIGITOVER' || t === 'DIGITUNDER') {
-        return Number((1.26 * MARKUP_MULTIPLIER).toFixed(4));
+    if (t === 'DIGITOVER') {
+        const b = barrier !== undefined ? Math.max(0, Math.min(8, barrier)) : 5;
+        const winningDigits = 9 - b;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
     }
-    return 0.85;
+    if (t === 'DIGITUNDER') {
+        const b = barrier !== undefined ? Math.max(1, Math.min(9, barrier)) : 4;
+        const winningDigits = b;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
+    }
+    return 0.88;
 };
 
-const computeProfitAndSell = (buyPrice, won, contractType, barrierRaw, source = 'bot') => {
+const computeProfitAndSell = (buyPrice, won, contractType, barrierRaw) => {
     const stake = Number(buyPrice || MIN_STAKE);
     if (!won) {
         return {
@@ -101,7 +132,7 @@ const computeProfitAndSell = (buyPrice, won, contractType, barrierRaw, source = 
             payout: 0,
         };
     }
-    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw, source);
+    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw);
     const profit = Number((stake * netProfitMult).toFixed(2));
     const sellPrice = Number((stake + profit).toFixed(2));
     return {
@@ -116,7 +147,7 @@ const createLocalMarketingBuyResponse = (amount, contractType, symbol = 'R_25', 
     const contractId = generateRealisticId(0);
     const txId = generateRealisticId(1);
     const stake = Number(amount || MIN_STAKE);
-    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw, 'bot');
+    const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw);
     const netPayout = Number((stake * (1 + netProfitMult)).toFixed(2));
     return {
         buy: {
@@ -222,19 +253,12 @@ export default Engine =>
             }
         }
 
-        scheduleRotMarketingSettlement(buy, contractType, marketingSession) {
+        scheduleRotMarketingSettlement(buy, contractType, marketingSession, barrierRaw) {
             const { loginid } = marketingSession;
             const latestCfg = getRotMarketingConfig(loginid) || marketingSession.cfg;
             const buyPrice = Number(buy.buy_price ?? this.tradeOptions?.amount ?? MIN_STAKE);
             const won = decideRotOutcome(latestCfg);
-            const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
-            const { profit, sellPrice, payout } = computeProfitAndSell(
-                buyPrice,
-                won,
-                contractType,
-                barrierRaw,
-                'bot'
-            );
+            const { profit, sellPrice, payout } = computeProfitAndSell(buyPrice, won, contractType, barrierRaw);
 
             const nowSec = Math.floor(Date.now() / 1000);
             const startTime = Number(buy.start_time) || nowSec;
@@ -278,7 +302,7 @@ export default Engine =>
             setTimeout(() => {
                 const updated = adjustRotMarketingBalance(sellPrice, loginid);
                 const client = DBotStore.instance?.client;
-                if (updated && client?.setBalance && client.loginid === loginid) {
+                if (updated && client?.setBalance && String(client.loginid || '').toUpperCase() === loginid) {
                     client.setBalance(updated.balance.toFixed(2));
                 }
 
@@ -314,7 +338,6 @@ export default Engine =>
         }
 
         purchase(contract_type) {
-            // Prevent calling purchase twice
             if (this.store.getState().scope !== BEFORE_PURCHASE) {
                 return Promise.resolve();
             }
@@ -326,7 +349,7 @@ export default Engine =>
                 (typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : null);
             const marketingSession = getActiveMarketingSession(activeLogin);
             const symbol = this.tradeOptions?.symbol || this.tradeOptions?.underlying_symbol || 'R_25';
-            const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
+            const barrierRaw = extractTradeBarrier(this.tradeOptions, contract_type);
             const requestedStake = Number(this.tradeOptions?.amount ?? 0);
 
             if (marketingSession && !canPlaceMarketingTrade(marketingSession, requestedStake)) {
@@ -338,12 +361,10 @@ export default Engine =>
                 return Promise.resolve();
             }
 
-            // Demo trade limit (src/nexus/demo-limit.ts): no new purchase on a locked demo; the bot is stopped by the pop-up
             if (!marketingSession && window.__nexusDemoGuard?.()) {
                 return new Promise(() => {});
             }
 
-            // Nexus copy trading: send the same contract to the followers' accounts (see src/nexus/store.ts)
             try {
                 window.__nexusMirror?.(tradeOptionToBuy(contract_type, this.tradeOptions).parameters);
             } catch (e) {
@@ -351,7 +372,6 @@ export default Engine =>
             }
 
             const onSuccess = response => {
-                // Don't unnecessarily send a forget request for a purchased contract.
                 const buy = response?.buy;
                 if (!buy) {
                     return;
@@ -362,7 +382,11 @@ export default Engine =>
                     if (stake > 0) {
                         const updated = adjustRotMarketingBalance(-stake, marketingSession.loginid);
                         const client = DBotStore.instance?.client;
-                        if (updated && client?.setBalance && client.loginid === marketingSession.loginid) {
+                        if (
+                            updated &&
+                            client?.setBalance &&
+                            String(client.loginid || '').toUpperCase() === marketingSession.loginid
+                        ) {
                             client.setBalance(updated.balance.toFixed(2));
                         }
                     }
@@ -393,7 +417,7 @@ export default Engine =>
                 });
 
                 if (marketingSession) {
-                    this.scheduleRotMarketingSettlement(buy, contract_type, marketingSession);
+                    this.scheduleRotMarketingSettlement(buy, contract_type, marketingSession, barrierRaw);
                 }
             };
 
@@ -419,7 +443,6 @@ export default Engine =>
                 return recoverFromError(
                     action,
                     (errorCode, makeDelay) => {
-                        // if disconnected no need to resubscription (handled by live-api)
                         if (errorCode !== 'DisconnectError') {
                             this.renewProposalsOnPurchase();
                         } else {
