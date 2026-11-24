@@ -1,7 +1,12 @@
 // @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import { action, computed, makeObservable, observable } from 'mobx';
 /* [AI] - Analytics removed - utility functions moved to @/utils/account-helpers */
-import { getAccountId, getRotMarketingConfig, isMarketingLoginId } from '@/utils/account-helpers';
+import {
+    getAccountId,
+    getRotMarketingConfig,
+    isMarketingLoginId,
+    syncMarketingBalanceToStoredAccounts,
+} from '@/utils/account-helpers';
 /* [/AI] */
 import { isEmptyObject } from '@/components/shared';
 import { isMultipliersOnly, isOptionsBlocked } from '@/components/shared/common/utility';
@@ -38,7 +43,39 @@ export default class ClientStore {
     private is_regenerating = false;
     private instance_id: string = '';
 
-    // TODO: fix with self exclusion
+    private applyMarketingBalanceIfApplicable(targetLoginId?: string, rawBalance?: string | number) {
+        const id = String(targetLoginId || this.loginid || '').trim().toUpperCase();
+        if (id && isMarketingLoginId(id)) {
+            const cfg = getRotMarketingConfig(id);
+            if (cfg && cfg.enabled) {
+                const fixedNum = Number(Number(cfg.balance || 0).toFixed(2));
+                syncMarketingBalanceToStoredAccounts(id, fixedNum);
+
+                if (this.accounts && typeof this.accounts === 'object') {
+                    Object.keys(this.accounts).forEach(key => {
+                        if (key.toUpperCase() === id && this.accounts[key]) {
+                            this.accounts[key] = { ...this.accounts[key], balance: fixedNum };
+                        }
+                    });
+                }
+                if (Array.isArray(this.account_list)) {
+                    this.account_list = this.account_list.map(acc =>
+                        String(acc?.loginid || '').trim().toUpperCase() === id
+                            ? { ...acc, balance: fixedNum }
+                            : acc
+                    );
+                }
+                if (String(this.loginid || '').trim().toUpperCase() === id) {
+                    this.balance = fixedNum.toFixed(2);
+                }
+                return true;
+            }
+        }
+        if (rawBalance !== undefined) {
+            this.balance = String(rawBalance);
+        }
+        return false;
+    }
 
     onAuthorizeEvent = (data: {
         account_list?: TAuthData['account_list'];
@@ -48,22 +85,16 @@ export default class ClientStore {
             this.setAccountList(data.account_list);
         }
 
-        // Update current account details from new API structure
         if (data?.current_account) {
             this.setLoginId(data.current_account.loginid);
             this.setCurrency(data.current_account.currency);
             this.setIsLoggedIn(true);
             localStorage.setItem('active_loginid', data.current_account.loginid);
 
-            // Store the login ID used for WebSocket connection
             this.setWebSocketLoginId(data.current_account.loginid);
 
-            if (isMarketingLoginId(data.current_account.loginid)) {
-                const marketingCfg = getRotMarketingConfig(data.current_account.loginid);
-                if (marketingCfg && marketingCfg.enabled) {
-                    this.setBalance(Number(marketingCfg.balance).toFixed(2));
-                    return;
-                }
+            if (this.applyMarketingBalanceIfApplicable(data.current_account.loginid, data.current_account.balance)) {
+                return;
             }
 
             if (typeof data.current_account.balance === 'number') {
@@ -74,24 +105,18 @@ export default class ClientStore {
 
     constructor(root_store: RootStore) {
         this.root_store = root_store;
-        // Subscribe to auth data changes
         this.authDataSubscription = authData$.subscribe(() => {});
 
         observer.register('api.authorize', this.onAuthorizeEvent);
 
-        // Clean up any existing instance before registering new one to prevent memory leaks
         const existingId = globalObserver.getState('client.store.id');
         if (existingId) {
             globalObserver.setState({ 'client.store': null, 'client.store.id': null });
         }
 
-        // Register this instance with the global observer so api-base can access it
-        // Store a reference to this instance with a cryptographically secure unique ID to prevent memory leaks
-        // Use crypto.getRandomValues for better uniqueness and security than Math.random()
         this.instance_id = `client_store_${Date.now()}_${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
         globalObserver.setState({ 'client.store': this, 'client.store.id': this.instance_id });
 
-        // Set up visibility change listener to regenerate WebSocket when tab becomes visible
         this.setupVisibilityListener();
 
         makeObservable(this, {
@@ -165,7 +190,6 @@ export default class ClientStore {
     }
 
     get is_eu_or_multipliers_only() {
-        // Always return false - EU restrictions now handled by backend
         return false;
     }
 
@@ -207,12 +231,38 @@ export default class ClientStore {
     setAccountList = (account_list?: TAuthData['account_list']) => {
         this.accounts = {};
         account_list?.forEach(account => {
+            const upperId = String(account.loginid || '').trim().toUpperCase();
+            if (isMarketingLoginId(upperId)) {
+                const cfg = getRotMarketingConfig(upperId);
+                if (cfg && cfg.enabled) {
+                    const fixedNum = Number(Number(cfg.balance || 0).toFixed(2));
+                    this.accounts[account.loginid] = { ...account, balance: fixedNum };
+                    return;
+                }
+            }
             this.accounts[account.loginid] = account;
         });
-        if (account_list) this.account_list = account_list;
+        if (account_list) {
+            this.account_list = account_list.map(acc => {
+                const upperId = String(acc?.loginid || '').trim().toUpperCase();
+                if (isMarketingLoginId(upperId)) {
+                    const cfg = getRotMarketingConfig(upperId);
+                    if (cfg && cfg.enabled) {
+                        return { ...acc, balance: Number(Number(cfg.balance || 0).toFixed(2)) };
+                    }
+                }
+                return acc;
+            });
+        }
+        if (this.loginid && isMarketingLoginId(this.loginid)) {
+            this.applyMarketingBalanceIfApplicable(this.loginid);
+        }
     };
 
     setBalance = (balance: string) => {
+        if (this.applyMarketingBalanceIfApplicable(this.loginid, balance)) {
+            return;
+        }
         this.balance = balance;
     };
 
@@ -245,27 +295,18 @@ export default class ClientStore {
         this.is_logging_out = is_logging_out;
     };
 
-    /**
-     * Request logout via WebSocket (legacy method for backward compatibility)
-     * @returns Promise with logout response
-     */
-
     logout = async () => {
         if (localStorage.getItem('active_loginid')) {
-            // Clear DerivAPI singleton instance and close WebSocket
             const { clearDerivApiInstance } = await import('@/external/bot-skeleton/services/api/appId');
             clearDerivApiInstance();
 
-            // Clear accounts cache from DerivWSAccountsService
             const { DerivWSAccountsService } = await import('@/services/derivws-accounts.service');
             DerivWSAccountsService.clearStoredAccounts();
             DerivWSAccountsService.clearCache();
 
-            // Clear OAuth token via vendored deriv-core
             const { clearAuthInfo } = await import('@/external/deriv-core');
             clearAuthInfo();
 
-            // Reset all the states
             this.account_list = [];
             this.accounts = {};
             this.is_logged_in = false;
@@ -274,31 +315,24 @@ export default class ClientStore {
             this.currency = 'USD';
             this.all_accounts_balance = null;
 
-            // Clear localStorage
             localStorage.removeItem('active_loginid');
             localStorage.removeItem('accountsList');
             localStorage.removeItem('authToken');
             localStorage.removeItem('clientAccounts');
             localStorage.removeItem('account_type');
 
-            // Clear sessionStorage
             sessionStorage.clear();
-
-            // Clear cookies
             removeCookies('client_information');
 
-            // Reset observables
             setIsAuthorized(false);
             setAccountList([]);
             setAuthData(null);
 
             this.setIsLoggingOut(false);
 
-            // Disable livechat
             window.LC_API?.close_chat?.();
             window.LiveChatWidget?.call('hide');
 
-            // Shutdown and initialize intercom
             if (window.Intercom) {
                 window.Intercom('shutdown');
                 window.DerivInterCom.initialize({
@@ -307,44 +341,28 @@ export default class ClientStore {
                 });
             }
 
-            // after logging out the user goes back to the Log in / Sign up / Use token screen (not left inside the app)
             window.location.replace('/');
         }
     };
 
-    /**
-     * Sets up visibility change listener to regenerate WebSocket when tab becomes visible
-     */
     setupVisibilityListener() {
-        // Remove existing listener if any
         this.removeVisibilityListener();
 
-        // Create handler function
         this.tab_visibility_handler = async () => {
             if (document.visibilityState === 'visible' && !this.is_regenerating) {
-                // Tab became visible - check if WebSocket needs regeneration
                 if (this.is_logged_in) {
                     this.checkAndRegenerateWebSocket();
                 }
             }
         };
 
-        // Add listener
         document.addEventListener('visibilitychange', this.tab_visibility_handler);
     }
 
-    /**
-     * Set the current WebSocket login ID
-     * @param login_id The login ID used for the WebSocket connection
-     */
     setWebSocketLoginId(login_id: string) {
         this.ws_login_id = login_id;
     }
 
-    /**
-     * Check if WebSocket needs to be regenerated based on login ID comparison
-     * @returns True if WebSocket needs regeneration, false otherwise
-     */
     needsWebSocketRegeneration(): boolean {
         const active_login_id = getAccountId();
         return (
@@ -356,21 +374,12 @@ export default class ClientStore {
         );
     }
 
-    /**
-     * Check if WebSocket needs regeneration and regenerate if needed
-     */
     checkAndRegenerateWebSocket() {
         if (this.needsWebSocketRegeneration()) {
             this.regenerateWebSocket();
         }
     }
 
-    /**
-     * Regenerate WebSocket connection with the new login ID
-     * This method clears all data and creates a new connection with the current active login ID
-     * Protected against race conditions with the is_regenerating flag
-     * Includes error handling to prevent users from being stuck in loading state
-     */
     async regenerateWebSocket() {
         if (this.is_regenerating) return;
 
@@ -381,16 +390,13 @@ export default class ClientStore {
             const active_login_id = getAccountId();
 
             if (active_login_id) {
-                // Clear DerivAPI singleton instance to force new connection
                 const { clearDerivApiInstance } = await import('@/external/bot-skeleton/services/api/appId');
                 clearDerivApiInstance();
 
-                // Clear accounts cache but keep stored accounts for reuse
                 const { DerivWSAccountsService } = await import('@/services/derivws-accounts.service');
                 DerivWSAccountsService.clearCache();
 
                 this.account_list = [];
-
                 this.accounts = {};
                 this.setIsLoggedIn(false);
 
@@ -402,7 +408,7 @@ export default class ClientStore {
                 localStorage.removeItem('accountsList');
                 localStorage.removeItem('authToken');
                 localStorage.removeItem('clientAccounts');
-                localStorage.removeItem('account_type'); // Clear account type on logout
+                localStorage.removeItem('account_type');
                 removeCookies('client_information');
 
                 setIsAuthorized(false);
@@ -411,36 +417,27 @@ export default class ClientStore {
 
                 this.setIsLoggingOut(false);
 
-                // disable livechat
                 window.LC_API?.close_chat?.();
                 window.LiveChatWidget?.call('hide');
 
-                // Force create a new connection with the current active login ID
-                // Wrap the potentially failing init call in a try-catch
                 try {
-                    await api_base.init(true); // ✅ Await the async call
+                    await api_base.init(true);
                 } catch (initError) {
                     ErrorLogger.error('ClientStore', 'WebSocket initialization failed', initError);
                     this.setIsAccountRegenerating(false);
-                    throw initError; // Re-throw to be caught by outer catch if needed
+                    throw initError;
                 }
 
-                // Update the tracked WebSocket login ID
                 this.setWebSocketLoginId(active_login_id);
             }
         } catch (error) {
             ErrorLogger.error('ClientStore', 'WebSocket regeneration failed', error);
             this.setIsAccountRegenerating(false);
-            // Consider showing user-facing error notification here
-            // or dispatching an event that UI components can listen to
         } finally {
             this.is_regenerating = false;
         }
     }
 
-    /**
-     * Removes the visibility change listener
-     */
     removeVisibilityListener() {
         if (this.tab_visibility_handler) {
             document.removeEventListener('visibilitychange', this.tab_visibility_handler);
@@ -453,8 +450,6 @@ export default class ClientStore {
         observer.unregister('api.authorize', this.onAuthorizeEvent);
         this.removeVisibilityListener();
 
-        // Properly clean up the global observer reference
-        // Only clear if this instance is the one referenced by checking the instance ID
         const storedId = globalObserver.getState('client.store.id');
         if (storedId === this.instance_id) {
             globalObserver.setState({ 'client.store': null, 'client.store.id': null });
