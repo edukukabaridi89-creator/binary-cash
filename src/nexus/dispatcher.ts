@@ -78,8 +78,13 @@ const getActiveMarketingSession = (): { loginid: string; cfg: RotMarketingConfig
 const syncMarketingClientBalance = (nextBalance: number | null, loginid: string) => {
     if (nextBalance === null || !Number.isFinite(nextBalance)) return;
     const client = nexus.root?.client;
-    if (client && typeof client.setBalance === 'function' && String(client.loginid || '').toUpperCase() === loginid) {
-        client.setBalance(nextBalance.toFixed(2));
+    if (client) {
+        if (typeof client.setAccountList === 'function' && Array.isArray(client.account_list)) {
+            client.setAccountList(client.account_list);
+        }
+        if (typeof client.setBalance === 'function' && String(client.loginid || '').trim().toUpperCase() === loginid) {
+            client.setBalance(nextBalance.toFixed(2));
+        }
     }
 };
 
@@ -101,7 +106,7 @@ const DIGIT_WIN_COUNT_MULTIPLIER: Record<number, number> = {
     8: 0.18,
     7: 0.33,
     6: 0.55,
-    5: 0.88,
+    5: 0.85,
     4: 1.32,
     3: 2.08,
     2: 3.62,
@@ -115,7 +120,7 @@ const getNetProfitMultiplier = (contractType: string, barrierRaw?: unknown): num
     const barrier = hasBarrier ? Math.max(0, Math.min(9, Math.floor(barrierNum))) : undefined;
 
     if (t === 'DIGITEVEN' || t === 'DIGITODD') {
-        return 0.88;
+        return 0.85;
     }
     if (t === 'DIGITMATCH') {
         return 8.25;
@@ -126,14 +131,14 @@ const getNetProfitMultiplier = (contractType: string, barrierRaw?: unknown): num
     if (t === 'DIGITOVER') {
         const b = barrier !== undefined ? Math.max(0, Math.min(8, barrier)) : 5;
         const winningDigits = 9 - b;
-        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.85;
     }
     if (t === 'DIGITUNDER') {
         const b = barrier !== undefined ? Math.max(1, Math.min(9, barrier)) : 4;
         const winningDigits = b;
-        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.88;
+        return DIGIT_WIN_COUNT_MULTIPLIER[winningDigits] ?? 0.85;
     }
-    return 0.88;
+    return 0.85;
 };
 
 const computeProfitAndSell = (buyPrice: number, won: boolean, contractType: string, barrierRaw?: unknown) => {
