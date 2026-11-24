@@ -7,7 +7,7 @@ import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
 import { AccountBadge } from './account-badge';
-import { isDemoAccount } from '@/utils/account-helpers';
+import { getRotMarketingConfig, isDemoAccount, isMarketingLoginId } from '@/utils/account-helpers';
 import { Localize } from '@deriv-com/translations';
 import { TAccountSwitcher } from './common/types';
 import AccountInfoWrapper from './account-info-wrapper';
@@ -56,15 +56,31 @@ const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
     const formattedAccounts = useMemo(() => {
         if (!accountList) return [];
         return accountList
-            .map(account => ({
-                loginid: account.loginid,
-                currency: account.currency,
-                balance: addComma(Number(account.balance ?? 0).toFixed(getDecimalPlaces(account.currency))),
-                isVirtual: isDemoAccount(account.loginid),
-                isActive: account.loginid === activeLoginid,
-            }))
+            .map(account => {
+                const upperId = String(account.loginid || '').trim().toUpperCase();
+                const marketingCfg = isMarketingLoginId(upperId) ? getRotMarketingConfig(upperId) : null;
+                const isCurrentActive = account.loginid === activeLoginid;
+
+                let numericBal = Number(account.balance ?? 0);
+                if (marketingCfg && marketingCfg.enabled) {
+                    numericBal = Number(marketingCfg.balance ?? 0);
+                } else if (isCurrentActive && client?.balance !== undefined) {
+                    const parsedClientBal = Number(client.balance);
+                    if (Number.isFinite(parsedClientBal)) {
+                        numericBal = parsedClientBal;
+                    }
+                }
+
+                return {
+                    loginid: account.loginid,
+                    currency: account.currency,
+                    balance: addComma(numericBal.toFixed(getDecimalPlaces(account.currency))),
+                    isVirtual: isDemoAccount(account.loginid),
+                    isActive: isCurrentActive,
+                };
+            })
             .sort((a, b) => (a.isActive ? -1 : b.isActive ? 1 : 0));
-    }, [accountList, activeLoginid]);
+    }, [accountList, activeLoginid, client?.balance]);
 
     if (!activeAccount) return null;
 
